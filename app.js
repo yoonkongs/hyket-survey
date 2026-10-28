@@ -100,7 +100,10 @@
     // first, because every other table points to them (e.g. a leftover row from before a restart)
     var table = queue.some(function (q) { return q.table === "participants"; }) ? "participants" : queue[0].table, batch = queue.filter(function (q) { return q.table === table; }).slice(0, 50);
     var item = { table: table, rows: [].concat.apply([], batch.map(function (q) { return q.rows; })) };
-    var headers = { "Content-Type": "application/json", "Prefer": "return=minimal,resolution=ignore-duplicates" };
+    // a plain insert: "resolution=ignore-duplicates" (ON CONFLICT DO NOTHING) makes Supabase ask for a SELECT permission,
+    // which anon must not have (it would expose answers), and every insert came back 401 "violates row-level security".
+    // A row sent twice (the participants row on every page load) now comes back 409, which counts as saved below.
+    var headers = { "Content-Type": "application/json", "Prefer": "return=minimal" };
     if (C.supabase_anon_key) {
       headers.apikey = C.supabase_anon_key;
       headers.Authorization = "Bearer " + C.supabase_anon_key;
