@@ -19,7 +19,7 @@
   // no Supabase URL: save to the server that sent the page (build.py --serve, opened by localhost,
   // the laptop's IP or a tunnel); GitHub Pages has no such server, so answers can't be saved there
   var isPages = /\.github\.io$/.test(location.hostname);
-  var DB_URL = C.supabase_url ? C.supabase_url.replace(/\/$/, "") : (isPages ? null : "");
+  var DB_URL = C.supabase_url ? C.supabase_url.replace(/\/+$/, "").replace(/\/rest\/v1$/, "") : (isPages ? null : "");   // also accepts the address copied with /rest/v1/
   var ICONS = { water: "💧", bodywash: "🧴", nuts: "🥜", cereal: "🥣", tumbler: "🥤", powerstrip: "🔌",
     detergent: "🧺", tissue: "🧻", ramen: "🍜", coffee: "☕", battery: "🔋" };
   var COLORS = ["#4f7cff", "#3aa66b", "#e2873a", "#9b6bd6", "#2fa3b5", "#d65b5b", "#c9a227", "#5b6b8c"];
