@@ -72,6 +72,18 @@
   var QKEY = "sim_queue";
   var queue = store(QKEY) || [];
   var flushing = false, flushTimer = null;
+  var SAVE = { sent: 0, stuck: false, last: "" };   // what the saving did; shown on the end screen and in the ?debug=1 panel
+  if (new URLSearchParams(location.search).get("debug")) {
+    // team check (?debug=1): a small black box at the bottom that says whether answers reach the database
+    var dbox = document.createElement("div");
+    dbox.style.cssText = "position:fixed;left:0;bottom:0;z-index:99999;background:#111;color:#7CFC7C;font:12px/1.4 monospace;padding:6px 8px;max-width:100%;white-space:pre-wrap";
+    document.body.appendChild(dbox);
+    setInterval(function () {
+      dbox.textContent = "저장 진단 · 주소: " + (DB_URL === null ? "(비어 있음: 저장 안 함)" : DB_URL || "(이 사이트 자신)") +
+        "\n보냄 " + SAVE.sent + " · 대기 " + queue.length + " · 따로 둔 실패 " + (store("sim_failed") || []).length + (SAVE.stuck ? " · 막힘" : "") +
+        "\n마지막: " + (SAVE.last || "(아직 없음)");
+    }, 500);
+  }
 
   function save(table, rows) {
     queue.push({ table: table, rows: Array.isArray(rows) ? rows : [rows] });
@@ -97,18 +109,33 @@
       method: "POST", headers: headers, body: JSON.stringify(item.rows), keepalive: true
     }).then(function (r) {
       flushing = false;
-      queue = queue.filter(function (q) { return batch.indexOf(q) < 0; });
-      if (!(r.ok || r.status === 409)) {
+      if (r.ok || r.status === 409) {
+        SAVE.sent += 1; SAVE.stuck = false; SAVE.last = "OK " + item.table;
+        queue = queue.filter(function (q) { return batch.indexOf(q) < 0; });
+        store(QKEY, queue);
+        if (queue.length) scheduleFlush(50);
+        return;
+      }
+      return r.text().then(function (t) {
+        SAVE.last = item.table + " -> " + r.status + " " + String(t).slice(0, 160);
+        console.error("insert into " + item.table + " failed", r.status, t);
+        if (r.status === 401 || r.status === 403 || r.status === 404 || r.status === 408 || r.status === 429 || r.status >= 500) {
+          // not a problem of this row (key, permission, address, server busy): keep it and try again later, never throw it away
+          SAVE.stuck = true;
+          scheduleFlush(15000);
+          return;
+        }
         // a rejected row (bad data) would block the queue forever: set it aside and move on
         var failed = store("sim_failed") || [];
         failed.push({ item: item, status: r.status });
         store("sim_failed", failed);
-        r.text().then(function (t) { console.error("insert into " + item.table + " failed", r.status, t); });
-      }
-      store(QKEY, queue);
-      if (queue.length) scheduleFlush(50);
-    }).catch(function () {
+        queue = queue.filter(function (q) { return batch.indexOf(q) < 0; });
+        store(QKEY, queue);
+        if (queue.length) scheduleFlush(50);
+      });
+    }).catch(function (e) {
       flushing = false;
+      SAVE.stuck = true; SAVE.last = "network: " + (e && e.message ? e.message : e);
       scheduleFlush(4000); // offline: keep the queue and try again
     });
   }
@@ -817,7 +844,12 @@
     (function waitSync() {
       var el = document.getElementById("sync");
       if (!el) return;
-      el.textContent = queue.length ? "응답을 저장하는 중입니다… 창을 닫지 말아 주세요." : "응답이 모두 저장되었습니다. 이 창을 닫으셔도 됩니다.";
+      var contact = (C.consent_blanks && C.consent_blanks.pi_contact) || "연구진";
+      el.textContent = queue.length
+        ? (SAVE.stuck ? "응답이 아직 저장되지 않았습니다. 창을 닫지 말고 잠시 기다려 주세요. 계속 이 문구가 보이면 연구진(" + contact + ")에게 알려 주세요."
+                      : "응답을 저장하는 중입니다… 창을 닫지 말아 주세요.")
+        : (store("sim_failed") || []).length ? "일부 응답이 저장되지 않았습니다. 이 화면을 캡처해 연구진(" + contact + ")에게 알려 주세요."
+        : "응답이 모두 저장되었습니다. 이 창을 닫으셔도 됩니다.";
       if ($("#restart")) $("#restart").disabled = queue.length > 0;
       if (queue.length) setTimeout(waitSync, 1000);
     })();
