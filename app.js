@@ -99,10 +99,18 @@
     // send every queued row for the oldest item's table in one request; participants rows always go
     // first, because every other table points to them (e.g. a leftover row from before a restart)
     var table = queue.some(function (q) { return q.table === "participants"; }) ? "participants" : queue[0].table, batch = queue.filter(function (q) { return q.table === table; }).slice(0, 50);
-    var item = { table: table, rows: [].concat.apply([], batch.map(function (q) { return q.rows; })) };
+    var rows = [].concat.apply([], batch.map(function (q) { return q.rows; })), once = {};
+    // the participants row is queued again on every page load: send each row only once per request
+    rows = rows.filter(function (r) {
+      var k = table === "participants" ? r.participant_id : JSON.stringify(r);
+      if (once[k]) return false;
+      once[k] = true;
+      return true;
+    });
+    var item = { table: table, rows: rows };
     // a plain insert: "resolution=ignore-duplicates" (ON CONFLICT DO NOTHING) makes Supabase ask for a SELECT permission,
     // which anon must not have (it would expose answers), and every insert came back 401 "violates row-level security".
-    // A row sent twice (the participants row on every page load) now comes back 409, which counts as saved below.
+    // So a row that is already there comes back 409; see below for what each 409 means.
     var headers = { "Content-Type": "application/json", "Prefer": "return=minimal" };
     if (C.supabase_anon_key) {
       headers.apikey = C.supabase_anon_key;
@@ -112,16 +120,33 @@
       method: "POST", headers: headers, body: JSON.stringify(item.rows), keepalive: true
     }).then(function (r) {
       flushing = false;
-      if (r.ok || r.status === 409) {
-        SAVE.sent += 1; SAVE.stuck = false; SAVE.last = "OK " + item.table;
+      function done(note) {
+        SAVE.sent += 1; SAVE.stuck = false; SAVE.last = "OK " + item.table + " (" + note + ")";
         queue = queue.filter(function (q) { return batch.indexOf(q) < 0; });
         store(QKEY, queue);
         if (queue.length) scheduleFlush(50);
-        return;
       }
+      if (r.ok) return done(r.status);
       return r.text().then(function (t) {
+        var code = "";
+        try { code = JSON.parse(t).code || ""; } catch (e) { code = ""; }
         SAVE.last = item.table + " -> " + r.status + " " + String(t).slice(0, 160);
         console.error("insert into " + item.table + " failed", r.status, t);
+        if (r.status === 409) {
+          // a 409 rejects the whole request. Several rows: send them one by one, so the new ones are not lost.
+          if (item.rows.length > 1) {
+            queue = queue.filter(function (q) { return batch.indexOf(q) < 0; });
+            item.rows.forEach(function (row) { queue.push({ table: item.table, rows: [row] }); });
+            store(QKEY, queue);
+            scheduleFlush(50);
+            return;
+          }
+          if (code === "23505") return done("이미 저장됨");   // this very row is already in the database
+          // 23503: the participants row it points to is not there (yet): keep it and try again
+          SAVE.stuck = true;
+          scheduleFlush(15000);
+          return;
+        }
         if (r.status === 401 || r.status === 403 || r.status === 404 || r.status === 408 || r.status === 429 || r.status >= 500) {
           // not a problem of this row (key, permission, address, server busy): keep it and try again later, never throw it away
           SAVE.stuck = true;
